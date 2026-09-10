@@ -1,18 +1,36 @@
-import speech_recognition as sr
+import os
 import webbrowser
+import requests
+import speech_recognition as sr
 import pyttsx3
 import musiclibrary
+from client import ask_jarvis
+from dotenv import load_dotenv
+
+load_dotenv()
 
 recognizer = sr.Recognizer()
-engine = pyttsx3.init()
+newsapi = os.getenv("NEWS_API_KEY")
 
 def speak(text):
-    engine.say(text)
-    engine.runAndWait()
+    if not text:
+        return
+
+    try:
+        # Re-initialize TTS engine on each invocation to prevent SAPI5 audio thread hanging
+        engine = pyttsx3.init("sapi5")
+        engine.setProperty("rate", 180)
+        engine.say(str(text))
+        engine.runAndWait()
+        engine.stop()
+        del engine
+    except Exception as e:
+        print(f"Speech Error: {e}")
 
 def processCommand(c):
-    c = c.lower()
+    c = c.lower().strip()
 
+    # Website Section
     if "open google" in c:
         webbrowser.open("https://www.google.com")
 
@@ -96,39 +114,136 @@ def processCommand(c):
 
     elif "open python" in c:
         webbrowser.open("https://www.python.org")
+
+    # News Section
+    elif "news" in c:
+        try:
+            r = requests.get(
+                f"https://newsapi.org/v2/top-headlines?country=us&apiKey={newsapi}",
+                timeout=10
+            )
+            data = r.json()
+
+            if data.get("status") == "ok":
+                headlines = data.get("articles", [])
+                if headlines:
+                    for article in headlines[:3]:
+                        title = article.get("title")
+                        if title:
+                            speak(title)
+                else:
+                    speak("Sorry Boss, I could not find any news.")
+            else:
+                speak("Sorry Boss, I could not fetch the news.")
+
+        except Exception as e:
+            speak("Sorry Boss, I could not fetch the news.")
+
+    # Music Section
     elif c.startswith("play "):
         song = c.split(" ", 1)[1].strip()
-        link = musiclibrary.music.get(song)
+        link = next(
+            (url for name, url in musiclibrary.music.items()
+             if name.lower() == song.lower()),
+            None
+        )
 
         if link:
             webbrowser.open(link)
         else:
             speak("Sorry Boss, I could not find that song.")
+
+    # AI Assistant Fallback
     else:
-        print("Command not recognized.")
+        response = ask_jarvis(c)
+        speak(response)
+
 
 if __name__ == "__main__":
+    print("JARVIS: Initializing Jarvis...")
     speak("Initializing Jarvis...")
 
-while True:
-    r = sr.Recognizer()
-
     try:
-        with sr.Microphone() as source:
-            print("Listening...")
-            audio = r.listen(source, timeout= 2, phrase_time_limit=1)
-        word = r.recognize_google(audio)
-        if(word.lower() == "jarvis"):
-            speak("Yes Boss!")
-            #Listen for command
+        microphone = sr.Microphone()
+        with microphone as source:
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
 
-            with sr.Microphone() as source:
-                print("Listening...")
-                audio = r.listen(source)
-                command = r.recognize_google(audio)
-                processCommand(command)
+        microphone_available = True
+        print("Voice mode enabled.")
 
     except Exception as e:
-        print(f"Error! {format(e)}")
-       
+        microphone_available = False
+        microphone = None
+        print("Text mode enabled.")
 
+    while True:
+        try:
+            if microphone_available:
+                try:
+                    with microphone as source:
+                        print("\nListening for 'Jarvis'...")
+                        audio = recognizer.listen(
+                            source,
+                            timeout=5,
+                            phrase_time_limit=3
+                        )
+
+                    word = recognizer.recognize_google(audio)
+
+                    if word.lower().strip() == "jarvis":
+                        speak("Yes Boss!")
+
+                        with microphone as source:
+                            audio_cmd = recognizer.listen(source, timeout=5, phrase_time_limit=7)
+
+                        command = recognizer.recognize_google(audio_cmd)
+
+                        if command.lower().strip() in ["exit", "quit", "bye"]:
+                            speak("Goodbye Boss!")
+                            break
+
+                        processCommand(command)
+
+                except sr.WaitTimeoutError:
+                    continue
+
+                except sr.UnknownValueError:
+                    pass
+
+                except sr.RequestError:
+                    pass
+
+                except OSError:
+                    microphone_available = False
+
+            else:
+                word = input("\nYou: ").strip()
+
+                if not word:
+                    continue
+
+                if word.lower() in ["exit", "quit", "bye"]:
+                    speak("Goodbye Boss!")
+                    break
+
+                if word.lower() == "jarvis":
+                    speak("Yes Boss!")
+                    command = input("Command: ").strip()
+
+                    if not command:
+                        continue
+
+                    if command.lower() in ["exit", "quit", "bye"]:
+                        speak("Goodbye Boss!")
+                        break
+
+                    processCommand(command)
+                else:
+                    processCommand(word)
+
+        except KeyboardInterrupt:
+            print("\nExiting Jarvis...")
+            break
+
+        except Exception as e:
+            pass
